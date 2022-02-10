@@ -73,6 +73,7 @@ mainLoop:
 
 func (c *CmdPxl) draw() {
 	c.drawImageBox()
+	c.drawImage()
 	c.drawInterface()
 	// s.SetContent(x2, y1, tcell.RuneURCorner, nil, style)
 	// s.SetContent(x1, y2, tcell.RuneLLCorner, nil, style)
@@ -107,17 +108,27 @@ func (c *CmdPxl) drawBox(x1, y1, x2, y2 int, style tcell.Style) {
 }
 
 func (c *CmdPxl) drawImageBox() {
-
 	offsetY := 6
-	x := min(c.imageWidth, c.screenWidth/2-2)
-	y := min(c.imageHeight, c.screenHeight-12)
+	x := min(c.imageWidth+1, c.screenWidth/2-2)
+	y := min(c.imageHeight+1, c.screenHeight-12)
 
 	x1 := 1 + c.paddingX
 	y1 := offsetY + c.paddingY
-	x2 := x1 + x
+	x2 := x1 + x*2 - 1
 	y2 := y1 + y
 	c.drawBox(x1, y1, x2, y2, c.interfaceStyle)
+}
 
+func (c *CmdPxl) drawImage() {
+	offX := c.paddingX + 2
+	offY := c.paddingY + 1 + 6
+	for j := 0; j < c.imageHeight; j++ {
+		for i := 0; i < c.imageWidth; i++ {
+			color := c.m.At(i, j)
+			c.s.SetContent(i*2+offX, j+offY, ' ', nil, tcell.StyleDefault.Background(tcell.FromImageColor(color)))
+			c.s.SetContent(i*2+offX+1, j+offY, ' ', nil, tcell.StyleDefault.Background(tcell.FromImageColor(color)))
+		}
+	}
 }
 
 func (c *CmdPxl) drawInterface() {}
