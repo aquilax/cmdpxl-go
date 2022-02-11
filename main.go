@@ -31,11 +31,13 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		fn := "empty.png"
+		fileName = &fn
 	} else {
-		log.Fatal("ned to set either filename or resolution")
+		log.Fatal("need to set either filename or resolution")
 	}
 
-	log.Fatal(NewCmdPxl(m).Run())
+	log.Fatal(NewCmdPxl(*fileName, m).Run())
 }
 
 func loadImage(fileName string) (image.Image, error) {

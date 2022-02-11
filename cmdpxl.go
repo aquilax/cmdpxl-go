@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"image"
+	"image/color"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -12,22 +14,29 @@ type CmdPxl struct {
 	imageWidth   int
 	imageHeight  int
 
+	cursorX int
+	cursorY int
+
 	paddingX int
 	paddingY int
 
 	m              image.Image
+	fileName       string
 	interfaceStyle tcell.Style
 	s              tcell.Screen
 }
 
-func NewCmdPxl(m image.Image) *CmdPxl {
+func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
 	b := m.Bounds()
 	return &CmdPxl{
 		interfaceStyle: tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorReset),
+		fileName:       fileName,
 		m:              m,
 		imageWidth:     b.Max.X,
 		imageHeight:    b.Max.Y,
 		paddingY:       1,
+		cursorX:        0,
+		cursorY:        0,
 	}
 }
 
@@ -62,8 +71,22 @@ mainLoop:
 			c.paddingX = max(1, (c.screenWidth-max(48, c.imageWidth*2))/2)
 			c.s.Sync()
 		case *tcell.EventKey:
-			if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC {
+			// quit
+			if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC || ev.Rune() == 'x' {
 				break mainLoop
+			}
+			// move cursor
+			if ev.Rune() == 'w' {
+				c.cursorY = mod(c.cursorY-1, c.imageHeight)
+			}
+			if ev.Rune() == 's' {
+				c.cursorY = mod(c.cursorY+1, c.imageHeight)
+			}
+			if ev.Rune() == 'a' {
+				c.cursorX = mod(c.cursorX-1, c.imageWidth)
+			}
+			if ev.Rune() == 'd' {
+				c.cursorX = mod(c.cursorX+1, c.imageWidth)
 			}
 		}
 		c.draw()
@@ -75,9 +98,10 @@ func (c *CmdPxl) draw() {
 	c.drawImageBox()
 	c.drawImage()
 	c.drawInterface()
-	// s.SetContent(x2, y1, tcell.RuneURCorner, nil, style)
-	// s.SetContent(x1, y2, tcell.RuneLLCorner, nil, style)
-	// s.SetContent(x2, y2, tcell.RuneLRCorner, nil, style)
+	drawText(c.s, 0, 0, c.interfaceStyle, fmt.Sprintf("pos: %02d,%02d", c.cursorX, c.cursorY))
+	drawText(c.s, 0, 1, c.interfaceStyle, fmt.Sprintf("CMDPXL-GO: %s (%dx%d)", c.fileName, c.imageWidth, c.imageHeight))
+	drawText(c.s, 0, 2, c.interfaceStyle, "[wasd] move | [e] draw | [f] fill | [arrows] pan")
+	drawText(c.s, 0, 3, c.interfaceStyle, "[z] undo | [t] filters | [x] quit")
 }
 
 func (c *CmdPxl) drawBox(x1, y1, x2, y2 int, style tcell.Style) {
@@ -122,16 +146,35 @@ func (c *CmdPxl) drawImageBox() {
 func (c *CmdPxl) drawImage() {
 	offX := c.paddingX + 2
 	offY := c.paddingY + 1 + 6
-	for j := 0; j < c.imageHeight; j++ {
-		for i := 0; i < c.imageWidth; i++ {
-			color := c.m.At(i, j)
-			c.s.SetContent(i*2+offX, j+offY, ' ', nil, tcell.StyleDefault.Background(tcell.FromImageColor(color)))
-			c.s.SetContent(i*2+offX+1, j+offY, ' ', nil, tcell.StyleDefault.Background(tcell.FromImageColor(color)))
+	for y := 0; y < c.imageHeight; y++ {
+		for x := 0; x < c.imageWidth; x++ {
+			color := c.m.At(x, y)
+			bgColor := tcell.FromImageColor(color)
+			style := tcell.StyleDefault.Background(bgColor)
+			if c.cursorX == x && c.cursorY == y {
+				style = style.Foreground(tcell.FromImageColor(getFgColor(color)))
+				c.s.SetContent(x*2+offX, y+offY, '[', nil, style)
+				c.s.SetContent(x*2+offX+1, y+offY, ']', nil, style)
+			} else {
+				c.s.SetContent(x*2+offX, y+offY, ' ', nil, style)
+				c.s.SetContent(x*2+offX+1, y+offY, ' ', nil, style)
+			}
 		}
 	}
 }
 
-func (c *CmdPxl) drawInterface() {}
+func (c *CmdPxl) drawInterface() {
+
+}
+
+func drawText(s tcell.Screen, x, y int, style tcell.Style, text string) {
+	row := y
+	col := x
+	for _, r := range text {
+		s.SetContent(col, row, r, nil, style)
+		col++
+	}
+}
 
 func min(numbers ...int) int {
 	min := numbers[0]
@@ -155,4 +198,24 @@ func max(numbers ...int) int {
 	}
 
 	return max
+}
+
+func mod(a, b int) int {
+	if a < 0 {
+		return b - 1
+	}
+	if a > b-1 {
+		return 0
+	}
+	return a
+}
+
+func getFgColor(c color.Color) color.Color {
+	// https://socketloop.com/tutorials/golang-find-relative-luminance-or-color-brightness
+	red, green, blue, _ := c.RGBA()
+	lum := float64(float64(0.299)*float64(red) + float64(0.587)*float64(green) + float64(0.114)*float64(blue))
+	if lum < .5 {
+		return color.White
+	}
+	return color.Black
 }
