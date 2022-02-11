@@ -8,6 +8,13 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+type layer map[image.Point]color.Color
+
+type historyItem struct {
+	point image.Point
+	color color.Color
+}
+
 type CmdPxl struct {
 	screenWidth  int
 	screenHeight int
@@ -24,6 +31,9 @@ type CmdPxl struct {
 	fileName       string
 	interfaceStyle tcell.Style
 	s              tcell.Screen
+	penColor       color.Color
+	history        []historyItem
+	paintLayer     layer
 }
 
 func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
@@ -37,6 +47,9 @@ func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
 		paddingY:       1,
 		cursorX:        0,
 		cursorY:        0,
+		penColor:       color.White,
+		history:        make([]historyItem, 0),
+		paintLayer:     make(layer),
 	}
 }
 
@@ -88,6 +101,17 @@ mainLoop:
 			if ev.Rune() == 'd' {
 				c.cursorX = mod(c.cursorX+1, c.imageWidth)
 			}
+			if ev.Rune() == 'e' || ev.Rune() == ' ' {
+				c.history = append(c.history, historyItem{image.Point{c.cursorX, c.cursorY}, c.penColor})
+				c.paintLayer[image.Point{c.cursorX, c.cursorY}] = c.penColor
+			}
+			if ev.Rune() == 'z' {
+				l := len(c.history)
+				if l > 0 {
+					c.history = c.history[:l-1]
+					c.paintLayer = getLayerFromHistory(c.history)
+				}
+			}
 		}
 		c.draw()
 	}
@@ -98,10 +122,6 @@ func (c *CmdPxl) draw() {
 	c.drawImageBox()
 	c.drawImage()
 	c.drawInterface()
-	drawText(c.s, 0, 0, c.interfaceStyle, fmt.Sprintf("pos: %02d,%02d", c.cursorX, c.cursorY))
-	drawText(c.s, 0, 1, c.interfaceStyle, fmt.Sprintf("CMDPXL-GO: %s (%dx%d)", c.fileName, c.imageWidth, c.imageHeight))
-	drawText(c.s, 0, 2, c.interfaceStyle, "[wasd] move | [e] draw | [f] fill | [arrows] pan")
-	drawText(c.s, 0, 3, c.interfaceStyle, "[z] undo | [t] filters | [x] quit")
 }
 
 func (c *CmdPxl) drawBox(x1, y1, x2, y2 int, style tcell.Style) {
@@ -132,11 +152,11 @@ func (c *CmdPxl) drawBox(x1, y1, x2, y2 int, style tcell.Style) {
 }
 
 func (c *CmdPxl) drawImageBox() {
-	offsetY := 6
+	offsetY := 5
 	x := min(c.imageWidth+1, c.screenWidth/2-2)
 	y := min(c.imageHeight+1, c.screenHeight-12)
 
-	x1 := 1 + c.paddingX
+	x1 := c.paddingX
 	y1 := offsetY + c.paddingY
 	x2 := x1 + x*2 - 1
 	y2 := y1 + y
@@ -144,11 +164,14 @@ func (c *CmdPxl) drawImageBox() {
 }
 
 func (c *CmdPxl) drawImage() {
-	offX := c.paddingX + 2
-	offY := c.paddingY + 1 + 6
+	offX := c.paddingX + 1
+	offY := c.paddingY + 1 + 5
 	for y := 0; y < c.imageHeight; y++ {
 		for x := 0; x < c.imageWidth; x++ {
 			color := c.m.At(x, y)
+			if c, ok := c.paintLayer[image.Point{x, y}]; ok {
+				color = c
+			}
 			bgColor := tcell.FromImageColor(color)
 			style := tcell.StyleDefault.Background(bgColor)
 			if c.cursorX == x && c.cursorY == y {
@@ -164,7 +187,9 @@ func (c *CmdPxl) drawImage() {
 }
 
 func (c *CmdPxl) drawInterface() {
-
+	drawText(c.s, c.paddingX, 1, c.interfaceStyle, fmt.Sprintf("CMDPXL-GO: %s (%dx%d) | pos: %02d,%02d", c.fileName, c.imageWidth, c.imageHeight, c.cursorX, c.cursorY))
+	drawText(c.s, c.paddingX, c.screenHeight-3, c.interfaceStyle, "[wasd] move | [e] draw | [f] fill | [arrows] pan")
+	drawText(c.s, c.paddingX, c.screenHeight-2, c.interfaceStyle, "[z] undo | [t] filters | [x] quit")
 }
 
 func drawText(s tcell.Screen, x, y int, style tcell.Style, text string) {
@@ -218,4 +243,12 @@ func getFgColor(c color.Color) color.Color {
 		return color.White
 	}
 	return color.Black
+}
+
+func getLayerFromHistory(h []historyItem) layer {
+	l := make(layer)
+	for _, hi := range h {
+		l[hi.point] = hi.color
+	}
+	return l
 }
