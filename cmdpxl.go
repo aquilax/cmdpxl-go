@@ -11,7 +11,10 @@ import (
 	"github.com/lucasb-eyer/go-colorful"
 )
 
-const maxHue = 380
+const (
+	maxHue     = 380
+	borderSize = 1
+)
 
 type direction bool
 
@@ -30,14 +33,21 @@ type historyItem struct {
 type CmdPxl struct {
 	screenWidth  int
 	screenHeight int
-	imageWidth   int
-	imageHeight  int
+
+	imageWidth  int
+	imageHeight int
+
+	maxDrawWidth  int
+	maxDrawHeight int
 
 	cursorX int
 	cursorY int
 
 	paddingX int
 	paddingY int
+
+	panX int
+	panY int
 
 	paletteSize    int
 	m              image.Image
@@ -52,12 +62,17 @@ type CmdPxl struct {
 func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
 	b := m.Bounds()
 	paletteSize := 11
+
 	return &CmdPxl{
 		interfaceStyle: tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorReset),
 		fileName:       fileName,
 		m:              m,
 		imageWidth:     b.Max.X,
 		imageHeight:    b.Max.Y,
+		panX:           0,
+		panY:           0,
+		maxDrawWidth:   0,
+		maxDrawHeight:  0,
 		paddingY:       1,
 		cursorX:        0,
 		cursorY:        0,
@@ -96,7 +111,14 @@ mainLoop:
 		switch ev := ev.(type) {
 		case *tcell.EventResize:
 			c.screenWidth, c.screenHeight = ev.Size()
-			c.paddingX = max(1, (c.screenWidth-max(48, c.imageWidth*2))/2)
+			c.paddingX = max(0, (c.screenWidth-max(48, c.imageWidth*2))/2)
+
+			c.maxDrawWidth = c.screenWidth - 2*borderSize
+			c.maxDrawHeight = c.screenHeight - 13 // chrome
+
+			c.panX = max(0, min(c.imageWidth-c.screenWidth, c.panX))
+			c.panY = max(0, min(c.imageHeight-c.screenHeight, c.panY))
+
 			c.s.Sync()
 		case *tcell.EventKey:
 			// quit
@@ -117,8 +139,8 @@ mainLoop:
 				c.cursorX = mod(c.cursorX+1, c.imageWidth)
 			}
 			if ev.Rune() == 'e' || ev.Rune() == ' ' {
-				c.history = append(c.history, historyItem{image.Point{c.cursorX, c.cursorY}, c.penColor.c})
-				c.paintLayer[image.Point{c.cursorX, c.cursorY}] = c.penColor.c
+				c.history = append(c.history, historyItem{image.Pt(c.cursorX, c.cursorY), c.penColor.c})
+				c.paintLayer[image.Pt(c.cursorX, c.cursorY)] = c.penColor.c
 			}
 			if ev.Rune() == 'z' {
 				l := len(c.history)
@@ -161,68 +183,42 @@ mainLoop:
 func (c *CmdPxl) draw() {
 	c.drawInterface()
 	c.drawColorSelect()
-	c.drawImageBox()
-	c.drawImage()
+	c.drawImage(c.drawImageBox())
 
 }
 
-func (c *CmdPxl) drawBox(x1, y1, x2, y2 int, style tcell.Style) {
-	if y2 < y1 {
-		y1, y2 = y2, y1
-	}
-	if x2 < x1 {
-		x1, x2 = x2, x1
-	}
-	for x := x1 + 1; x <= x2-1; x++ {
-		// top border
-		c.s.SetContent(x, y1, '─', nil, style)
-		// bottom border
-		c.s.SetContent(x, y2, '─', nil, style)
-	}
-	for y := y1 + 1; y <= y2-1; y++ {
-		// top border
-		c.s.SetContent(x1, y, '│', nil, style)
-		// bottom border
-		c.s.SetContent(x2, y, '│', nil, style)
-	}
-	if y1 != y2 && x1 != x2 {
-		c.s.SetContent(x1, y1, '╭', nil, style)
-		c.s.SetContent(x2, y1, '╮', nil, style)
-		c.s.SetContent(x1, y2, '╰', nil, style)
-		c.s.SetContent(x2, y2, '╯', nil, style)
-	}
-}
-
-func (c *CmdPxl) drawImageBox() {
+func (c *CmdPxl) drawImageBox() *drawBox {
 	offsetY := 5
-	x := min(c.imageWidth+1, c.screenWidth/2-2)
+	x := min(c.imageWidth+1, c.screenWidth/2)
 	y := min(c.imageHeight+1, c.screenHeight-12)
 
 	x1 := c.paddingX
 	y1 := offsetY + c.paddingY
-	x2 := x1 + x*2 - 1
-	y2 := y1 + y
-	c.drawBox(x1, y1, x2, y2, c.interfaceStyle)
+	width := x*2 - 1
+	height := y
+
+	return newDrawBox(x1, y1, width, height).draw(c.s, c.interfaceStyle)
 }
 
-func (c *CmdPxl) drawImage() {
-	offX := c.paddingX + 1
-	offY := c.paddingY + 1 + 5
-	for y := 0; y < c.imageHeight; y++ {
-		for x := 0; x < c.imageWidth; x++ {
+func (c *CmdPxl) drawImage(dBox *drawBox) {
+	xBoundary := min(c.imageWidth, dBox.Max.X)
+	yBoundary := min(c.imageHeight, dBox.Max.Y)
+	for y := 0; y < yBoundary; y++ {
+		for x := 0; x < xBoundary; x++ {
 			color := c.m.At(x, y)
-			if c, ok := c.paintLayer[image.Point{x, y}]; ok {
+			if c, ok := c.paintLayer[image.Pt(x, y)]; ok {
 				color = c
 			}
 			bgColor := tcell.FromImageColor(color)
 			style := tcell.StyleDefault.Background(bgColor)
+			p := dBox.getPoint(x*2, y)
 			if c.cursorX == x && c.cursorY == y {
 				style = style.Foreground(tcell.FromImageColor(getFgColor(color)))
-				c.s.SetContent(x*2+offX, y+offY, '[', nil, style)
-				c.s.SetContent(x*2+offX+1, y+offY, ']', nil, style)
+				c.s.SetContent(p.X, p.Y, '[', nil, style)
+				c.s.SetContent(p.X+1, p.Y, ']', nil, style)
 			} else {
-				c.s.SetContent(x*2+offX, y+offY, ' ', nil, style)
-				c.s.SetContent(x*2+offX+1, y+offY, ' ', nil, style)
+				c.s.SetContent(p.X, p.Y, ' ', nil, style)
+				c.s.SetContent(p.X+1, p.Y, ' ', nil, style)
 			}
 		}
 	}
@@ -237,18 +233,18 @@ func (c *CmdPxl) drawInterface() {
 func (c *CmdPxl) drawColorSelect() {
 	sectionWidth := 12
 	boxHeight := 3
-	boxes := 4
+	numBoxes := 4
 	x1 := c.paddingX
 	y1 := c.paddingY + 1
-	x2 := x1 + boxes*sectionWidth
-	y2 := y1 + boxHeight
 	// box
-	c.drawBox(x1, y1, x2, y2, c.interfaceStyle)
+	dBox := newDrawBox(x1, y1, numBoxes*sectionWidth, boxHeight).draw(c.s, c.interfaceStyle)
+	p := dBox.getPoint(0, 0)
 	// instructions
 	instructions := "[u/j]: hue  [i/k]: sat  [o/l]: val  current"
-	drawText(c.s, x1+1, y1+1, c.interfaceStyle, instructions)
+	drawText(c.s, p.X, p.Y, c.interfaceStyle, instructions)
 
 	// Color selection
+	p = dBox.getPoint(0, 1)
 	for offset, cl := range c.penColor.huePalette {
 		style := tcell.StyleDefault.Background(tcell.FromImageColor(cl))
 		text := ' '
@@ -256,10 +252,15 @@ func (c *CmdPxl) drawColorSelect() {
 			style.Foreground(tcell.FromImageColor(getFgColor(cl)))
 			text = '●'
 		}
-		c.s.SetContent(x1+1+offset, y1+2, text, nil, style)
+		c.s.SetContent(p.X+offset, p.Y, text, nil, style)
 	}
 
 	// Saturation
+	p = dBox.getPoint(sectionWidth*1, 1)
+	c.s.SetContent(p.X-1, p.Y-2, '┬', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y-1, '│', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y+0, '│', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y+1, '┴', nil, c.interfaceStyle)
 	for offset, cl := range c.penColor.saturationPalette {
 		style := tcell.StyleDefault.Background(tcell.FromImageColor(cl))
 		text := ' '
@@ -267,10 +268,15 @@ func (c *CmdPxl) drawColorSelect() {
 			style.Foreground(tcell.FromImageColor(getFgColor(cl)))
 			text = '●'
 		}
-		c.s.SetContent(x1+offset+1+sectionWidth*1, y1+2, text, nil, style)
+		c.s.SetContent(p.X+offset, p.Y, text, nil, style)
 	}
 
 	// Value
+	p = dBox.getPoint(sectionWidth*2, 1)
+	c.s.SetContent(p.X-1, p.Y-2, '┬', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y-1, '│', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y+0, '│', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y+1, '┴', nil, c.interfaceStyle)
 	for offset, cl := range c.penColor.valuePalette {
 		style := tcell.StyleDefault.Background(tcell.FromImageColor(cl))
 		text := ' '
@@ -278,13 +284,18 @@ func (c *CmdPxl) drawColorSelect() {
 			style.Foreground(tcell.FromImageColor(getFgColor(cl)))
 			text = '●'
 		}
-		c.s.SetContent(x1+offset+1+sectionWidth*2, y1+2, text, nil, style)
+		c.s.SetContent(p.X+offset, p.Y, text, nil, style)
 	}
 
 	// Current color
 	style := tcell.StyleDefault.Background((tcell.FromImageColor(c.penColor.c)))
-	drawText(c.s, x1+1+sectionWidth*3, y1+2, style, strings.Repeat(" ", c.paletteSize))
+	p = dBox.getPoint(sectionWidth*3, 1)
+	c.s.SetContent(p.X-1, p.Y-2, '┬', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y-1, '│', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y+0, '│', nil, c.interfaceStyle)
+	c.s.SetContent(p.X-1, p.Y+1, '┴', nil, c.interfaceStyle)
 
+	drawText(c.s, p.X, p.Y, style, strings.Repeat(" ", c.paletteSize))
 }
 
 func drawText(s tcell.Screen, x, y int, style tcell.Style, text string) {
@@ -452,6 +463,8 @@ func (cc *cmdColor) changeHue(dir direction) {
 	cc.c = colorful.Hsv(newHue, cc.saturation, cc.value)
 	cc.hue = newHue
 	cc.huePaletteIndex = getHuePaletteIndex(newHue, cc.huePalette)
+	cc.saturationPalette = getSaturationPalette(newHue, cc.paletteSize)
+	cc.valuePalette = getValuePalette(newHue, cc.saturation, cc.paletteSize)
 }
 
 func getSaturationPalette(hue float64, items int) []colorful.Color {
@@ -494,6 +507,7 @@ func (cc *cmdColor) changeSaturation(dir direction) {
 	cc.c = colorful.Hsv(cc.hue, newSaturation, cc.value)
 	cc.saturation = newSaturation
 	cc.saturationPaletteIndex = getSaturationPaletteIndex(newSaturation, cc.saturationPalette)
+	cc.valuePalette = getValuePalette(cc.hue, cc.saturation, cc.paletteSize)
 }
 
 func getValuePalette(hue, saturation float64, items int) []colorful.Color {
@@ -535,4 +549,57 @@ func (cc *cmdColor) changeValue(dir direction) {
 	cc.c = colorful.Hsv(cc.hue, cc.saturation, newValue)
 	cc.value = newValue
 	cc.valuePaletteIndex = getValuePaletteIndex(newValue, cc.valuePalette)
+}
+
+type drawBox struct {
+	image.Rectangle
+}
+
+func newDrawBoxCoord(x1, y1, x2, y2 int) *drawBox {
+	if y2 < y1 {
+		y1, y2 = y2, y1
+	}
+	if x2 < x1 {
+		x1, x2 = x2, x1
+	}
+	return &drawBox{
+		image.Rect(x1, y1, x2, y2),
+	}
+}
+
+func newDrawBox(x, y, width, height int) *drawBox {
+	return &drawBox{
+		image.Rect(x, y, x+width, y+height),
+	}
+}
+
+func (db *drawBox) draw(s tcell.Screen, style tcell.Style) *drawBox {
+	x1 := db.Min.X
+	y1 := db.Min.Y
+	x2 := db.Max.X
+	y2 := db.Max.Y
+
+	for x := x1 + 1; x <= x2-1; x++ {
+		// top border
+		s.SetContent(x, y1, '─', nil, style)
+		// bottom border
+		s.SetContent(x, y2, '─', nil, style)
+	}
+	for y := y1 + 1; y <= y2-1; y++ {
+		// top border
+		s.SetContent(x1, y, '│', nil, style)
+		// bottom border
+		s.SetContent(x2, y, '│', nil, style)
+	}
+	if y1 != y2 && x1 != x2 {
+		s.SetContent(x1, y1, '╭', nil, style)
+		s.SetContent(x2, y1, '╮', nil, style)
+		s.SetContent(x1, y2, '╰', nil, style)
+		s.SetContent(x2, y2, '╯', nil, style)
+	}
+	return db
+}
+
+func (db *drawBox) getPoint(x, y int) image.Point {
+	return image.Pt(x+db.Min.X+borderSize, y+db.Min.Y+borderSize)
 }
