@@ -11,16 +11,17 @@ import (
 	"github.com/lucasb-eyer/go-colorful"
 )
 
+type direction bool
+type state int
+
 const (
 	maxHue     = 380
 	borderSize = 1
-)
 
-type direction bool
-
-const (
-	dirIncrease direction = true
-	dirDecrease direction = false
+	dirIncrease  direction = true
+	dirDecrease  direction = false
+	stateDrawing state     = iota
+	stateQuit
 )
 
 type layer map[image.Point]color.Color
@@ -31,6 +32,8 @@ type historyItem struct {
 }
 
 type CmdPxl struct {
+	currentState state
+
 	screenWidth  int
 	screenHeight int
 
@@ -64,6 +67,7 @@ func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
 	paletteSize := 11
 
 	return &CmdPxl{
+		currentState:   stateDrawing,
 		interfaceStyle: tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorReset),
 		fileName:       fileName,
 		m:              m,
@@ -121,58 +125,68 @@ mainLoop:
 
 			c.s.Sync()
 		case *tcell.EventKey:
-			// quit
-			if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC || ev.Rune() == 'x' {
-				break mainLoop
-			}
-			// move cursor
-			if ev.Rune() == 'w' {
-				c.cursorY = mod(c.cursorY-1, c.imageHeight)
-			}
-			if ev.Rune() == 's' {
-				c.cursorY = mod(c.cursorY+1, c.imageHeight)
-			}
-			if ev.Rune() == 'a' {
-				c.cursorX = mod(c.cursorX-1, c.imageWidth)
-			}
-			if ev.Rune() == 'd' {
-				c.cursorX = mod(c.cursorX+1, c.imageWidth)
-			}
-			if ev.Rune() == 'e' || ev.Rune() == ' ' {
-				c.history = append(c.history, historyItem{image.Pt(c.cursorX, c.cursorY), c.penColor.c})
-				c.paintLayer[image.Pt(c.cursorX, c.cursorY)] = c.penColor.c
-			}
-			if ev.Rune() == 'z' {
-				l := len(c.history)
-				if l > 0 {
-					c.history = c.history[:l-1]
-					c.paintLayer = getLayerFromHistory(c.history)
+			if c.currentState == stateDrawing {
+				// quit
+				if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC || ev.Rune() == 'x' {
+					c.currentState = stateQuit
 				}
-			}
-			// colors
+				// move cursor
+				if ev.Rune() == 'w' {
+					c.cursorY = mod(c.cursorY-1, c.imageHeight)
+				}
+				if ev.Rune() == 's' {
+					c.cursorY = mod(c.cursorY+1, c.imageHeight)
+				}
+				if ev.Rune() == 'a' {
+					c.cursorX = mod(c.cursorX-1, c.imageWidth)
+				}
+				if ev.Rune() == 'd' {
+					c.cursorX = mod(c.cursorX+1, c.imageWidth)
+				}
+				if ev.Rune() == 'e' || ev.Rune() == ' ' {
+					c.history = append(c.history, historyItem{image.Pt(c.cursorX, c.cursorY), c.penColor.c})
+					c.paintLayer[image.Pt(c.cursorX, c.cursorY)] = c.penColor.c
+				}
+				if ev.Rune() == 'z' {
+					l := len(c.history)
+					if l > 0 {
+						c.history = c.history[:l-1]
+						c.paintLayer = getLayerFromHistory(c.history)
+					}
+				}
+				// colors
 
-			// hue
-			if ev.Rune() == 'j' {
-				c.penColor.changeHue(dirIncrease)
-			}
-			if ev.Rune() == 'u' {
-				c.penColor.changeHue(dirDecrease)
-			}
+				// hue
+				if ev.Rune() == 'j' {
+					c.penColor.changeHue(dirIncrease)
+				}
+				if ev.Rune() == 'u' {
+					c.penColor.changeHue(dirDecrease)
+				}
 
-			// saturation
-			if ev.Rune() == 'k' {
-				c.penColor.changeSaturation(dirIncrease)
-			}
-			if ev.Rune() == 'i' {
-				c.penColor.changeSaturation(dirDecrease)
-			}
+				// saturation
+				if ev.Rune() == 'k' {
+					c.penColor.changeSaturation(dirIncrease)
+				}
+				if ev.Rune() == 'i' {
+					c.penColor.changeSaturation(dirDecrease)
+				}
 
-			// value
-			if ev.Rune() == 'l' {
-				c.penColor.changeValue(dirIncrease)
-			}
-			if ev.Rune() == 'o' {
-				c.penColor.changeValue(dirDecrease)
+				// value
+				if ev.Rune() == 'l' {
+					c.penColor.changeValue(dirIncrease)
+				}
+				if ev.Rune() == 'o' {
+					c.penColor.changeValue(dirDecrease)
+				}
+			} else if c.currentState == stateQuit {
+				if ev.Rune() == 'y' || ev.Rune() == 'Y' {
+					break mainLoop
+				}
+				if ev.Rune() == 'n' || ev.Rune() == 'N' || ev.Key() == tcell.KeyEscape {
+					c.currentState = stateDrawing
+					c.s.Clear()
+				}
 			}
 		}
 		c.draw()
@@ -184,7 +198,17 @@ func (c *CmdPxl) draw() {
 	c.drawInterface()
 	c.drawColorSelect()
 	c.drawImage(c.drawImageBox())
+	if c.currentState == stateQuit {
+		c.drawExitConfirmation()
+	}
+}
 
+func (c *CmdPxl) drawExitConfirmation() *drawBox {
+	confirmation := "Do you want to exit? [y/n]"
+	dBox := newDrawBox(0, 0, len(confirmation)+2+borderSize*2, borderSize*2+1).draw(c.s, c.interfaceStyle)
+	p := dBox.getPoint(1, 0)
+	drawText(c.s, p.X, p.Y, c.interfaceStyle, confirmation)
+	return dBox
 }
 
 func (c *CmdPxl) drawImageBox() *drawBox {
@@ -194,8 +218,8 @@ func (c *CmdPxl) drawImageBox() *drawBox {
 
 	x1 := c.paddingX
 	y1 := offsetY + c.paddingY
-	width := x*2 - 1
-	height := y
+	width := x * 2
+	height := y + 1
 
 	return newDrawBox(x1, y1, width, height).draw(c.s, c.interfaceStyle)
 }
@@ -232,12 +256,12 @@ func (c *CmdPxl) drawInterface() {
 
 func (c *CmdPxl) drawColorSelect() {
 	sectionWidth := 12
-	boxHeight := 3
+	boxHeight := 4
 	numBoxes := 4
 	x1 := c.paddingX
 	y1 := c.paddingY + 1
 	// box
-	dBox := newDrawBox(x1, y1, numBoxes*sectionWidth, boxHeight).draw(c.s, c.interfaceStyle)
+	dBox := newDrawBox(x1, y1, numBoxes*sectionWidth+borderSize, boxHeight).draw(c.s, c.interfaceStyle)
 	p := dBox.getPoint(0, 0)
 	// instructions
 	instructions := "[u/j]: hue  [i/k]: sat  [o/l]: val  current"
@@ -552,6 +576,7 @@ func (cc *cmdColor) changeValue(dir direction) {
 }
 
 type drawBox struct {
+	borderSize int
 	image.Rectangle
 }
 
@@ -563,13 +588,15 @@ func newDrawBoxCoord(x1, y1, x2, y2 int) *drawBox {
 		x1, x2 = x2, x1
 	}
 	return &drawBox{
+		borderSize,
 		image.Rect(x1, y1, x2, y2),
 	}
 }
 
 func newDrawBox(x, y, width, height int) *drawBox {
 	return &drawBox{
-		image.Rect(x, y, x+width, y+height),
+		borderSize,
+		image.Rect(x, y, x+width-1, y+height-1),
 	}
 }
 
@@ -601,5 +628,5 @@ func (db *drawBox) draw(s tcell.Screen, style tcell.Style) *drawBox {
 }
 
 func (db *drawBox) getPoint(x, y int) image.Point {
-	return image.Pt(x+db.Min.X+borderSize, y+db.Min.Y+borderSize)
+	return image.Pt(x+db.Min.X+db.borderSize, y+db.Min.Y+db.borderSize)
 }
