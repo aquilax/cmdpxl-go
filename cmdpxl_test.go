@@ -6,7 +6,7 @@ import (
 	"github.com/lucasb-eyer/go-colorful"
 )
 
-func Test_getPaletteIndex(t *testing.T) {
+func Test_getHuePaletteIndex(t *testing.T) {
 	type args struct {
 		color   colorful.Color
 		palette []colorful.Color
@@ -20,7 +20,7 @@ func Test_getPaletteIndex(t *testing.T) {
 			"works for green",
 			args{
 				color:   colorful.Color{R: 0, G: 255, B: 0},
-				palette: getPalette(11),
+				palette: getHuePalette(11),
 			},
 			3,
 		},
@@ -28,8 +28,8 @@ func Test_getPaletteIndex(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			hue, _, _ := tt.args.color.Hsv()
-			if got := getPaletteIndex(hue, tt.args.palette); got != tt.want {
-				t.Errorf("getPaletteIndex() = %v, want %v", got, tt.want)
+			if got := getHuePaletteIndex(hue, tt.args.palette); got != tt.want {
+				t.Errorf("getHuePaletteIndex() = %v, want %v", got, tt.want)
 			}
 		})
 	}
