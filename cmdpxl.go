@@ -23,8 +23,6 @@ const (
 	stateQuit
 )
 
-type layer map[image.Point]color.Color
-
 type historyItem struct {
 	point image.Point
 	color color.Color
@@ -41,6 +39,8 @@ type CmdPxl struct {
 
 	maxDrawWidth  int
 	maxDrawHeight int
+
+	imageBox *drawBox
 
 	cursorX int
 	cursorY int
@@ -81,7 +81,7 @@ func NewCmdPxl(fileName string, m image.Image, saveImage saveImageCallback) *Cmd
 		cursorX:        0,
 		cursorY:        0,
 		paletteSize:    paletteSize,
-		penColor:       *NewCmdColor(color.RGBA{255, 255, 255, 1}, paletteSize),
+		penColor:       *NewCmdColor(color.White, paletteSize),
 		history:        make([]historyItem, 0),
 		saveImage:      saveImage,
 	}
@@ -120,9 +120,7 @@ mainLoop:
 			c.maxDrawWidth = c.screenWidth - 2*borderSize
 			c.maxDrawHeight = c.screenHeight - 13 // chrome
 
-			c.panX = max(0, min(c.imageWidth-c.screenWidth, c.panX))
-			c.panY = max(0, min(c.imageHeight-c.screenHeight, c.panY))
-
+			c.imageBox = c.getImageBox()
 			c.s.Sync()
 		case *tcell.EventKey:
 			if c.currentState == stateDrawing {
@@ -161,6 +159,16 @@ mainLoop:
 						c.m.l = getLayerFromHistory(c.history)
 					}
 				}
+				if ev.Rune() == 'D' {
+					// debug
+					newDrawBox(0, 0, 5, 3).draw(c.s, c.interfaceStyle)
+					drawText(c.s, 0, 10, c.interfaceStyle, "box: "+c.imageBox.String())
+					drawText(c.s, 0, 11, c.interfaceStyle, "canvas: "+c.imageBox.getCanvas().String())
+					drawText(c.s, 0, 12, c.interfaceStyle, fmt.Sprintf("WxH: %dx%d", c.imageBox.getCanvas().Dx(), c.imageBox.getCanvas().Dy()))
+					drawText(c.s, 0, 13, c.interfaceStyle, fmt.Sprintf("Pan XxY: %dx%d", c.panX, c.panY))
+					drawText(c.s, 0, 14, c.interfaceStyle, fmt.Sprintf("image XxY: %dx%d", c.imageWidth, c.imageHeight))
+				}
+
 				// colors
 
 				// hue
@@ -189,26 +197,26 @@ mainLoop:
 
 				// panning
 				if ev.Key() == tcell.KeyUp {
-					c.panY -= 10
+					c.panY -= 1
 					if c.panY < 0 {
-						c.panY = c.imageHeight - c.maxDrawHeight
+						c.panY = c.imageHeight - (c.imageBox.getCanvas().Dy() + 1)
 					}
 				}
 				if ev.Key() == tcell.KeyDown {
-					c.panY += 10
-					if c.panY > c.imageHeight-c.maxDrawHeight {
+					c.panY += 1
+					if c.panY > c.imageHeight-(c.imageBox.getCanvas().Dy()+1) {
 						c.panY = 0
 					}
 				}
 				if ev.Key() == tcell.KeyLeft {
-					c.panX -= 10
+					c.panX -= 1
 					if c.panX < 0 {
-						c.panX = c.imageWidth - c.maxDrawWidth
+						c.panX = c.imageWidth - ((c.imageBox.getCanvas().Dx() + 1) / 2)
 					}
 				}
 				if ev.Key() == tcell.KeyRight {
-					c.panX += 10
-					if c.panX > c.imageWidth-c.maxDrawWidth {
+					c.panX += 1
+					if c.panX > c.imageWidth-((c.imageBox.getCanvas().Dx()+1)/2) {
 						c.panX = 0
 					}
 				}
@@ -234,7 +242,8 @@ mainLoop:
 func (c *CmdPxl) draw() {
 	c.drawInterface()
 	c.drawColorSelect()
-	c.drawImage(c.drawImageBox())
+	c.imageBox.draw(c.s, c.interfaceStyle)
+	c.drawImage(c.imageBox)
 	if c.currentState == stateQuit {
 		c.drawExitConfirmation()
 	}
@@ -248,17 +257,15 @@ func (c *CmdPxl) drawExitConfirmation() *drawBox {
 	return dBox
 }
 
-func (c *CmdPxl) drawImageBox() *drawBox {
+func (c *CmdPxl) getImageBox() *drawBox {
 	offsetY := 5
-	x := min(c.imageWidth+1, c.screenWidth/2)
-	y := min(c.imageHeight+1, c.screenHeight-12)
+	interfaceRows := 12
+	width := min(c.imageWidth*2+2, c.screenWidth)
+	height := min(c.imageHeight+2, c.screenHeight-interfaceRows)
 
-	x1 := c.paddingX
-	y1 := offsetY + c.paddingY
-	width := x * 2
-	height := y + 1
-
-	return newDrawBox(x1, y1, width, height).draw(c.s, c.interfaceStyle)
+	x := c.paddingX
+	y := offsetY + c.paddingY
+	return newDrawBox(x, y, width, height)
 }
 
 func (c *CmdPxl) drawImage(dBox *drawBox) {
@@ -268,12 +275,12 @@ func (c *CmdPxl) drawImage(dBox *drawBox) {
 	yBoundary := min(c.imageHeight, canvas.Dy()+1)
 	for y := 0; y < yBoundary; y++ {
 		for x := 0; x < xBoundary; x++ {
-			color := c.m.At(x+c.panX, y+c.panY)
-			bgColor := tcell.FromImageColor(color)
+			imageColor := c.m.At(x+c.panX, y+c.panY)
+			bgColor := tcell.FromImageColor(imageColor)
 			style := tcell.StyleDefault.Background(bgColor)
 			p := dBox.getPoint(x*2, y)
 			if c.cursorX == x && c.cursorY == y {
-				style = style.Foreground(tcell.FromImageColor(getFgColor(color)))
+				style = style.Foreground(tcell.FromImageColor(getFgColor(imageColor)))
 				c.s.SetContent(p.X, p.Y, '[', nil, style)
 				c.s.SetContent(p.X+1, p.Y, ']', nil, style)
 			} else {
@@ -418,20 +425,4 @@ func getLayerFromHistory(h []historyItem) layer {
 		l[hi.point] = hi.color
 	}
 	return l
-}
-
-type layeredImage struct {
-	l layer
-	image.Image
-}
-
-func (li *layeredImage) At(x, y int) color.Color {
-	if c, ok := li.l[image.Pt(x, y)]; ok {
-		return c
-	}
-	return li.Image.At(x, y)
-}
-
-func (li *layeredImage) Set(p image.Point, c color.Color) {
-	li.l[p] = c
 }
