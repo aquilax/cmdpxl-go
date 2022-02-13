@@ -220,6 +220,14 @@ mainLoop:
 						c.panX = 0
 					}
 				}
+
+				if ev.Rune() == 'f' {
+					color := c.m.At(c.cursorX, c.cursorY)
+					if color != c.penColor.c {
+						floodFill(&c.m, image.Pt(c.cursorX, c.cursorY), c.m.At(c.cursorX, c.cursorY), c.penColor.c)
+					}
+				}
+
 			} else if c.currentState == stateQuit {
 				if ev.Rune() == 'y' || ev.Rune() == 'Y' {
 					err := c.saveImage(c.fileName, &c.m)
