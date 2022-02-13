@@ -4,11 +4,11 @@ Go port of the terminal image editor [cmdpxl](https://github.com/knosmos/cmdpxl)
 
 ## TODO
 
-* [ ] Panning
+* [x] Panning
 * [ ] Pick color
 * [ ] Filters
-* [ ] Better layout management
+* [ ] ~Better layout management
 * [ ] Layers
 * [ ] Fill
 * [ ] Continuous draw
-* [ ] Save
+* [X] ~Save

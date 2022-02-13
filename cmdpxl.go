@@ -4,15 +4,14 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"math"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/lucasb-eyer/go-colorful"
 )
 
 type direction bool
 type state int
+type saveImageCallback = func(fileName string, m image.Image) error
 
 const (
 	maxHue     = 380
@@ -53,16 +52,17 @@ type CmdPxl struct {
 	panY int
 
 	paletteSize    int
-	m              image.Image
+	m              layeredImage
 	fileName       string
 	interfaceStyle tcell.Style
 	s              tcell.Screen
 	penColor       cmdColor
 	history        []historyItem
-	paintLayer     layer
+
+	saveImage saveImageCallback
 }
 
-func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
+func NewCmdPxl(fileName string, m image.Image, saveImage saveImageCallback) *CmdPxl {
 	b := m.Bounds()
 	paletteSize := 11
 
@@ -70,7 +70,7 @@ func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
 		currentState:   stateDrawing,
 		interfaceStyle: tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorReset),
 		fileName:       fileName,
-		m:              m,
+		m:              layeredImage{make(layer), m},
 		imageWidth:     b.Max.X,
 		imageHeight:    b.Max.Y,
 		panX:           0,
@@ -81,9 +81,9 @@ func NewCmdPxl(fileName string, m image.Image) *CmdPxl {
 		cursorX:        0,
 		cursorY:        0,
 		paletteSize:    paletteSize,
-		penColor:       *NewCmdColor(color.RGBA{0, 0, 0, 1}, paletteSize),
+		penColor:       *NewCmdColor(color.RGBA{255, 255, 255, 1}, paletteSize),
 		history:        make([]historyItem, 0),
-		paintLayer:     make(layer),
+		saveImage:      saveImage,
 	}
 }
 
@@ -128,7 +128,13 @@ mainLoop:
 			if c.currentState == stateDrawing {
 				// quit
 				if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC || ev.Rune() == 'x' {
-					c.currentState = stateQuit
+					// any changes made
+					if len(c.history) > 0 {
+						c.currentState = stateQuit
+					} else {
+						// quit directly
+						break mainLoop
+					}
 				}
 				// move cursor
 				if ev.Rune() == 'w' {
@@ -144,14 +150,15 @@ mainLoop:
 					c.cursorX = mod(c.cursorX+1, c.imageWidth)
 				}
 				if ev.Rune() == 'e' || ev.Rune() == ' ' {
-					c.history = append(c.history, historyItem{image.Pt(c.cursorX, c.cursorY), c.penColor.c})
-					c.paintLayer[image.Pt(c.cursorX, c.cursorY)] = c.penColor.c
+					pt := image.Pt(c.cursorX+c.panX, c.cursorY+c.panY)
+					c.history = append(c.history, historyItem{pt, c.penColor.c})
+					c.m.Set(pt, c.penColor.c)
 				}
 				if ev.Rune() == 'z' {
 					l := len(c.history)
 					if l > 0 {
 						c.history = c.history[:l-1]
-						c.paintLayer = getLayerFromHistory(c.history)
+						c.m.l = getLayerFromHistory(c.history)
 					}
 				}
 				// colors
@@ -179,8 +186,38 @@ mainLoop:
 				if ev.Rune() == 'o' {
 					c.penColor.changeValue(dirDecrease)
 				}
+
+				// panning
+				if ev.Key() == tcell.KeyUp {
+					c.panY -= 10
+					if c.panY < 0 {
+						c.panY = c.imageHeight - c.maxDrawHeight
+					}
+				}
+				if ev.Key() == tcell.KeyDown {
+					c.panY += 10
+					if c.panY > c.imageHeight-c.maxDrawHeight {
+						c.panY = 0
+					}
+				}
+				if ev.Key() == tcell.KeyLeft {
+					c.panX -= 10
+					if c.panX < 0 {
+						c.panX = c.imageWidth - c.maxDrawWidth
+					}
+				}
+				if ev.Key() == tcell.KeyRight {
+					c.panX += 10
+					if c.panX > c.imageWidth-c.maxDrawWidth {
+						c.panX = 0
+					}
+				}
 			} else if c.currentState == stateQuit {
 				if ev.Rune() == 'y' || ev.Rune() == 'Y' {
+					err := c.saveImage(c.fileName, &c.m)
+					if err != nil {
+						return err
+					}
 					break mainLoop
 				}
 				if ev.Rune() == 'n' || ev.Rune() == 'N' || ev.Key() == tcell.KeyEscape {
@@ -225,14 +262,13 @@ func (c *CmdPxl) drawImageBox() *drawBox {
 }
 
 func (c *CmdPxl) drawImage(dBox *drawBox) {
-	xBoundary := min(c.imageWidth, dBox.Max.X)
-	yBoundary := min(c.imageHeight, dBox.Max.Y)
+	canvas := dBox.getCanvas()
+	const pixelWidth = 2
+	xBoundary := min(c.imageWidth*2, canvas.Dx()/pixelWidth+1)
+	yBoundary := min(c.imageHeight, canvas.Dy()+1)
 	for y := 0; y < yBoundary; y++ {
 		for x := 0; x < xBoundary; x++ {
-			color := c.m.At(x, y)
-			if c, ok := c.paintLayer[image.Pt(x, y)]; ok {
-				color = c
-			}
+			color := c.m.At(x+c.panX, y+c.panY)
 			bgColor := tcell.FromImageColor(color)
 			style := tcell.StyleDefault.Background(bgColor)
 			p := dBox.getPoint(x*2, y)
@@ -249,9 +285,10 @@ func (c *CmdPxl) drawImage(dBox *drawBox) {
 }
 
 func (c *CmdPxl) drawInterface() {
-	drawText(c.s, c.paddingX, 1, c.interfaceStyle, fmt.Sprintf("CMDPXL-GO: %s (%dx%d) | pos: %02d,%02d", c.fileName, c.imageWidth, c.imageHeight, c.cursorX, c.cursorY))
-	drawText(c.s, c.paddingX, c.screenHeight-3, c.interfaceStyle, "[wasd] move | [e] draw | [f] fill | [arrows] pan")
-	drawText(c.s, c.paddingX, c.screenHeight-2, c.interfaceStyle, "[z] undo | [t] filters | [x] quit")
+	drawText(c.s, c.paddingX, 1, c.interfaceStyle, fmt.Sprintf("CMDPXL-GO: %s (%dx%d) | pos: %03d,%03d", c.fileName, c.imageWidth, c.imageHeight, c.cursorX, c.cursorY))
+	p := newDrawBox(c.paddingX, c.screenHeight-4, 100, 4).getPoint(0, 0)
+	drawText(c.s, p.X, p.Y, c.interfaceStyle, "[wasd] move | [e] draw | [f] fill | [arrows] pan")
+	drawText(c.s, p.X, p.Y+1, c.interfaceStyle, "[z] undo | [t] filters | [x] quit")
 }
 
 func (c *CmdPxl) drawColorSelect() {
@@ -383,250 +420,18 @@ func getLayerFromHistory(h []historyItem) layer {
 	return l
 }
 
-type cmdColor struct {
-	c color.Color
-
-	hue        float64
-	saturation float64
-	value      float64
-
-	paletteSize int
-
-	huePaletteIndex int
-	huePalette      []colorful.Color
-
-	saturationPaletteIndex int
-	saturationPalette      []colorful.Color
-
-	valuePaletteIndex int
-	valuePalette      []colorful.Color
+type layeredImage struct {
+	l layer
+	image.Image
 }
 
-func NewCmdColor(c color.Color, paletteSize int) *cmdColor {
-	cl, _ := colorful.MakeColor(c)
-	h, s, v := cl.Hsv()
-	huePalette := getHuePalette(paletteSize)
-	huePaletteIndex := getHuePaletteIndex(h, huePalette)
-
-	saturationPalette := getSaturationPalette(h, paletteSize)
-	saturationPaletteIndex := getSaturationPaletteIndex(s, saturationPalette)
-
-	valuePalette := getValuePalette(h, s, paletteSize)
-	valuePaletteIndex := getValuePaletteIndex(v, valuePalette)
-
-	return &cmdColor{
-		c:                      c,
-		hue:                    h,
-		saturation:             s,
-		value:                  v,
-		paletteSize:            paletteSize,
-		huePaletteIndex:        huePaletteIndex,
-		huePalette:             huePalette,
-		saturationPalette:      saturationPalette,
-		saturationPaletteIndex: saturationPaletteIndex,
-		valuePalette:           valuePalette,
-		valuePaletteIndex:      valuePaletteIndex,
+func (li *layeredImage) At(x, y int) color.Color {
+	if c, ok := li.l[image.Pt(x, y)]; ok {
+		return c
 	}
+	return li.Image.At(x, y)
 }
 
-func getHuePalette(items int) []colorful.Color {
-	const (
-		saturation = 1.0
-		value      = 1.0
-	)
-	result := make([]colorful.Color, items)
-	step := maxHue / float64(items)
-	for i := 0; i < items; i++ {
-		h := float64(i) * step
-		result[i] = colorful.Hsv(h, saturation, value)
-	}
-	return result
-}
-
-func getHuePaletteIndex(hue float64, palette []colorful.Color) int {
-	hues := make([]float64, len(palette))
-	for i, c := range palette {
-		h, _, _ := c.Hsv()
-		hues[i] = h
-	}
-	return getClosestIndex(hue, hues)
-}
-
-func getClosestIndex(value float64, list []float64) int {
-	prev := 0.0
-	for i, v := range list {
-		if v > value {
-			if math.Abs(prev-value) < math.Abs(v-value) {
-				return i - 1
-			} else {
-				return i
-			}
-		}
-		prev = v
-	}
-	return len(list) - 1
-}
-
-func (cc *cmdColor) changeHue(dir direction) {
-	newIndex := -1
-	if dir == dirIncrease {
-		// up
-		newIndex = cc.huePaletteIndex + 1
-		if newIndex > cc.paletteSize-1 {
-			newIndex = cc.paletteSize - 1
-		}
-	} else {
-		//down
-		newIndex = cc.huePaletteIndex - 1
-		if newIndex < 0 {
-			newIndex = 0
-		}
-	}
-	cl := cc.huePalette[newIndex]
-	newHue, _, _ := cl.Hsv()
-	cc.c = colorful.Hsv(newHue, cc.saturation, cc.value)
-	cc.hue = newHue
-	cc.huePaletteIndex = getHuePaletteIndex(newHue, cc.huePalette)
-	cc.saturationPalette = getSaturationPalette(newHue, cc.paletteSize)
-	cc.valuePalette = getValuePalette(newHue, cc.saturation, cc.paletteSize)
-}
-
-func getSaturationPalette(hue float64, items int) []colorful.Color {
-	const value = 1.0
-	result := make([]colorful.Color, items)
-	step := 1.0 / float64(items)
-	for i := 0; i < items; i++ {
-		saturation := float64(i) * step
-		result[i] = colorful.Hsv(hue, saturation, value)
-	}
-	return result
-}
-
-func getSaturationPaletteIndex(saturation float64, palette []colorful.Color) int {
-	saturations := make([]float64, len(palette))
-	for i, c := range palette {
-		_, s, _ := c.Hsv()
-		saturations[i] = s
-	}
-	return getClosestIndex(saturation, saturations)
-}
-
-func (cc *cmdColor) changeSaturation(dir direction) {
-	newIndex := -1
-	if dir == dirIncrease {
-		// up
-		newIndex = cc.saturationPaletteIndex + 1
-		if newIndex > cc.paletteSize-1 {
-			newIndex = cc.paletteSize - 1
-		}
-	} else {
-		//down
-		newIndex = cc.saturationPaletteIndex - 1
-		if newIndex < 0 {
-			newIndex = 0
-		}
-	}
-	cl := cc.saturationPalette[newIndex]
-	_, newSaturation, _ := cl.Hsv()
-	cc.c = colorful.Hsv(cc.hue, newSaturation, cc.value)
-	cc.saturation = newSaturation
-	cc.saturationPaletteIndex = getSaturationPaletteIndex(newSaturation, cc.saturationPalette)
-	cc.valuePalette = getValuePalette(cc.hue, cc.saturation, cc.paletteSize)
-}
-
-func getValuePalette(hue, saturation float64, items int) []colorful.Color {
-	result := make([]colorful.Color, items)
-	step := 1.0 / float64(items)
-	for i := 0; i < items; i++ {
-		value := float64(i) * step
-		result[i] = colorful.Hsv(hue, saturation, value)
-	}
-	return result
-}
-
-func getValuePaletteIndex(value float64, palette []colorful.Color) int {
-	values := make([]float64, len(palette))
-	for i, c := range palette {
-		_, _, v := c.Hsv()
-		values[i] = v
-	}
-	return getClosestIndex(value, values)
-}
-
-func (cc *cmdColor) changeValue(dir direction) {
-	newIndex := -1
-	if dir == dirIncrease {
-		// up
-		newIndex = cc.valuePaletteIndex + 1
-		if newIndex > cc.paletteSize-1 {
-			newIndex = cc.paletteSize - 1
-		}
-	} else {
-		//down
-		newIndex = cc.valuePaletteIndex - 1
-		if newIndex < 0 {
-			newIndex = 0
-		}
-	}
-	cl := cc.valuePalette[newIndex]
-	_, _, newValue := cl.Hsv()
-	cc.c = colorful.Hsv(cc.hue, cc.saturation, newValue)
-	cc.value = newValue
-	cc.valuePaletteIndex = getValuePaletteIndex(newValue, cc.valuePalette)
-}
-
-type drawBox struct {
-	borderSize int
-	image.Rectangle
-}
-
-func newDrawBoxCoord(x1, y1, x2, y2 int) *drawBox {
-	if y2 < y1 {
-		y1, y2 = y2, y1
-	}
-	if x2 < x1 {
-		x1, x2 = x2, x1
-	}
-	return &drawBox{
-		borderSize,
-		image.Rect(x1, y1, x2, y2),
-	}
-}
-
-func newDrawBox(x, y, width, height int) *drawBox {
-	return &drawBox{
-		borderSize,
-		image.Rect(x, y, x+width-1, y+height-1),
-	}
-}
-
-func (db *drawBox) draw(s tcell.Screen, style tcell.Style) *drawBox {
-	x1 := db.Min.X
-	y1 := db.Min.Y
-	x2 := db.Max.X
-	y2 := db.Max.Y
-
-	for x := x1 + 1; x <= x2-1; x++ {
-		// top border
-		s.SetContent(x, y1, '─', nil, style)
-		// bottom border
-		s.SetContent(x, y2, '─', nil, style)
-	}
-	for y := y1 + 1; y <= y2-1; y++ {
-		// top border
-		s.SetContent(x1, y, '│', nil, style)
-		// bottom border
-		s.SetContent(x2, y, '│', nil, style)
-	}
-	if y1 != y2 && x1 != x2 {
-		s.SetContent(x1, y1, '╭', nil, style)
-		s.SetContent(x2, y1, '╮', nil, style)
-		s.SetContent(x1, y2, '╰', nil, style)
-		s.SetContent(x2, y2, '╯', nil, style)
-	}
-	return db
-}
-
-func (db *drawBox) getPoint(x, y int) image.Point {
-	return image.Pt(x+db.Min.X+db.borderSize, y+db.Min.Y+db.borderSize)
+func (li *layeredImage) Set(p image.Point, c color.Color) {
+	li.l[p] = c
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"image"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"image/png"
 	_ "image/png"
 )
 
@@ -21,23 +23,26 @@ func main() {
 	var m image.Image
 	var err error
 
-	if *fileName != "" {
-		m, err = loadImage(*fileName)
-		if err != nil {
-			log.Fatal(err)
-		}
-	} else if *res != "" {
-		m, err = createImage(*res)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fn := "empty.png"
-		fileName = &fn
-	} else {
-		log.Fatal("need to set either filename or resolution")
-	}
+	isExistingFile := fileExists(*fileName)
 
-	log.Fatal(NewCmdPxl(*fileName, m).Run())
+	if *fileName != "" {
+		if isExistingFile {
+			m, err = loadImage(*fileName)
+			if err != nil {
+				log.Fatal(err)
+			}
+		} else if *res != "" && !isExistingFile {
+			m, err = createImage(*res)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if err := NewCmdPxl(*fileName, m, saveImage).Run(); err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		log.Fatal("need to set either existing filename or resolution and new filename")
+	}
 }
 
 func loadImage(fileName string) (image.Image, error) {
@@ -67,4 +72,19 @@ func createImage(res string) (image.Image, error) {
 		return nil, fmt.Errorf("invalid image width %s", resArr[0])
 	}
 	return image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{w, h}}), nil
+}
+
+func saveImage(fileName string, m image.Image) error {
+	outFile, err := os.Create(fileName)
+	if err != nil {
+		return err
+	}
+	return png.Encode(outFile, m)
+}
+
+func fileExists(fileName string) bool {
+	if _, err := os.Stat(fileName); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return true
 }
